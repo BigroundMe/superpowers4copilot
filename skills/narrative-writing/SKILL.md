@@ -1,160 +1,230 @@
 ---
 name: narrative-writing
-description: Use when writing personal technical notes, learning summaries, decision records, or retrospectives for Obsidian. Defines the narrative arc, Obsidian format standards, and quality checklist for storytelling-style technical writing.
+description: Operational workflow for creating personal technical notes in Obsidian via MCP. Covers material gathering (quotes, references), knowledge linking, Obsidian MCP operations, and post-writing editorial review. Pair with narrative-writer agent.
 ---
 
-# 叙事型技术写作
+# 叙事笔记工作流
 
-## 概述
+叙事笔记的**具体操作流程**：从素材收集到写作到编辑审核。写作哲学和人格定义在 `narrative-writer` agent 中，本 skill 不重复。
 
-将技术经验和学习转化为引人入胜、有洞察力的个人笔记。使用叙事弧线（场景→冲突→探索→发现→总结）代替流水账式罗列。
+**开始时宣告：** "我正在使用 narrative-writing 技能。"
 
-**开始时宣告：** "我正在使用 narrative-writing 技能来创建叙事笔记。"
+## 流程总览
 
-**配套 Agent：** `narrative-writer` — 为此技能设计的专业 agent。
-
-## 核心原则
-
-> **写故事，不写流水账。**
-
-读者（未来的自己）需要的不是"发生了什么"，而是"我学到了什么、为什么重要、下次怎么用"。
-
-## 叙事弧线模板
-
-### 1. 场景引入（Scene）
-设定情境。用一个具体场景开头，不用抽象定义。
-
-```markdown
-上周在给 API 加缓存时，发现 Redis 的淘汰策略比想象中复杂得多。
+```
+素材收集 → 知识关联 → 写作（由 narrative-writer agent 执行） → 责任编辑审核 → 保存到 Obsidian
 ```
 
-**不要：** "Redis 是一个内存数据库，支持多种数据结构。"
+---
 
-### 2. 问题/冲突（Conflict）
-引出核心矛盾。明确说出"我原以为…但实际上…"。
+## Phase 1：素材收集
 
-### 3. 探索过程（Exploration）
-还原思考路径。展示弯路和失败尝试——它们帮助避免重复。
+写作前先积累素材。好笔记 = 好素材 + 好叙事。
 
-### 4. 关键发现（Discovery）
-先给直觉理解，再展开技术细节。用类比和具体例子。
+### 1.1 上下文提取
 
-### 5. 可操作总结（Actionable Summary）
-2-5 条具体可执行的要点。使用 Obsidian callout：
+从当前会话中提炼可写入笔记的内容：
 
-```markdown
-> [!tip] 下次遇到类似问题
-> 1. 先确认缓存淘汰策略是否匹配业务场景
-> 2. 用 `redis-cli INFO` 检查 eviction 统计
-> 3. 压测时观察 hit rate 变化曲线
+- 回顾对话历史，找出 **核心决策点**（选了 A 而不是 B，为什么？）
+- 提取 **关键代码片段**（证明观点的最小代码）
+- 记录 **失败路径和弯路**（这些是最有价值的素材）
+- 识别 **"原来如此"瞬间**（困惑转为理解的转折点）
+
+### 1.2 引用与名言
+
+用恰当的引用为笔记增加深度和可信度：
+
+| 素材类型 | 获取方式 | 示例 |
+|---------|---------|------|
+| 名人名言 | `fetch_webpage` 搜索相关主题的名言 | > "Premature optimization is the root of all evil." — Donald Knuth |
+| 官方文档 | `fetch_webpage` 获取技术文档原文 | 引用 Redis 官方文档关于 LRU 的描述 |
+| 论文/博客 | `fetch_webpage` 抓取关键段落 | 引用 Martin Fowler 关于重构的观点 |
+| 代码注释 | `read_file` 从源码提取 | 库作者在代码中留下的设计说明 |
+
+**引用规范：**
+- 引用必须标注出处（人名 + 来源）
+- 使用 Obsidian blockquote 格式：`> "引文" — 出处`
+- 不要编造引用。找不到合适的就不用
+
+### 1.3 故事素材
+
+技术笔记也是故事。好故事需要：
+
+- **类比**：用日常事物解释技术概念（"Redis 的 LRU 像是图书馆管理员只看最近几本书的借阅记录来决定淘汰哪本"）
+- **对比**：展示"以为的"vs"实际的"差异
+- **数据**：具体数字比形容词有说服力（"延迟从 200ms 降到 15ms" > "性能大幅提升"）
+
+---
+
+## Phase 2：知识关联
+
+在 Obsidian vault 中搜索已有笔记，建立连接。
+
+### 2.1 搜索已有笔记
+
+使用 Obsidian MCP 搜索当前 vault 中的相关笔记：
+
+```
+步骤：
+1. 用 Obsidian MCP 的搜索功能，按关键词搜索 vault
+2. 按 tag 搜索：找到相同主题域的笔记
+3. 浏览搜索结果，识别可以建立 [[wikilink]] 的笔记
 ```
 
-## Obsidian 格式规范
+**搜索策略：**
+- **关键词搜索**：用笔记核心概念的英文术语搜索（如 "caching", "Redis", "LRU"）
+- **Tag 搜索**：搜索相关 tag（如 `#performance`, `#database`）
+- **路径浏览**：查看笔记所在目录，找同目录下的相关笔记
 
-### 必需的 YAML Frontmatter
+### 2.2 建立连接
 
-```yaml
----
-date: YYYY-MM-DD
-tags: [topic1, topic2]
-type: learning | decision | retrospective | concept
-status: draft | reviewed
----
+找到相关笔记后，规划连接方式：
+
+| 连接类型 | 格式 | 用途 |
+|---------|------|------|
+| 正向链接 | `[[目标笔记]]` | 在新笔记中引用已有知识 |
+| 段落引用 | `[[目标笔记#段落标题]]` | 精确引用某个段落 |
+| 别名链接 | `[[目标笔记\|显示文本]]` | 用更自然的文字显示链接 |
+| 反向链接 | 在旧笔记末尾追加链接 | 让旧笔记也能找到新笔记 |
+
+**目标：** 每篇新笔记至少建立 2 个 wikilink 连接。如果 vault 中确实无相关笔记，在"相关笔记"段写明未来可能关联的主题。
+
+### 2.3 Tag 策略
+
+检查 vault 已有 tag 体系，复用而非新建：
+
+```
+步骤：
+1. 搜索 vault 中已使用的 tags
+2. 复用已有 tag（保持一致性）
+3. 只在确实缺少合适 tag 时新建
+4. 新笔记至少 2 个 tag
 ```
 
-### 格式元素
-
-| 元素 | 用法 | 必需 |
-|------|------|------|
-| `[[wikilinks]]` | 连接相关笔记 | 每篇至少 1 个 |
-| `#tags` | 分类（在 frontmatter 中定义）| 每篇至少 2 个 |
-| `> [!tip]` | 突出关键发现 | 每篇至少 1 个 |
-| `> [!warning]` | 标注陷阱/注意事项 | 可选 |
-| 代码块 | 关键概念配代码示例 | 技术笔记必需 |
-
-### 笔记类型
-
-| 类型 | 适用场景 | 叙事重点 |
-|------|---------|----------|
-| `learning` | 学习/读书笔记 | 从困惑到理解的过程 |
-| `decision` | 技术方案/决策记录 | 方案对比和选择理由 |
-| `retrospective` | 项目复盘 | 做对了什么、下次改进什么 |
-| `concept` | 概念解释 | 用最简单的方式解释复杂概念 |
-
-## 质量检查清单
-
-写完后逐项检查：
-
-- [ ] 有没有流水账段落？（按时间罗列 → 应按 insight 组织）
-- [ ] 核心 insight 是否在前 3 段内出现？
-- [ ] 可操作总结是否可以独立阅读？（不需要重读全文）
-- [ ] 是否有至少 1 个 `[[wikilink]]` 连接相关笔记？
-- [ ] YAML frontmatter 是否完整（date, tags, type, status）？
-- [ ] 技术术语是否保留英文？（避免生硬翻译）
-- [ ] 每段是否只有一个核心观点？
-- [ ] 是否用了 callout block 突出关键发现？
-
-## Anti-patterns vs 正确做法
-
-| 坏习惯 | 正确做法 |
-|--------|---------|
-| "首先…然后…接着…最后…" | "核心发现是…因为…具体来说…" |
-| 堆砌所有细节 | 只保留服务于理解的细节 |
-| 全文平铺无重点 | callout blocks + 加粗突出关键句 |
-| 纯文字描述代码逻辑 | 直接给代码片段 + 注释 |
-| 孤立笔记 | `[[wikilinks]]` 建立知识网络 |
-| "缓存失效" 可以，"贮藏失效" 不行 | 保留英文术语，中文行文 |
-
-## 示例笔记模板
-
-```markdown
----
-date: 2026-04-02
-tags: [redis, caching, performance]
-type: learning
-status: draft
 ---
 
-# Redis 淘汰策略：不只是 LRU 那么简单
+## Phase 3：写作
 
-上周在给用户 API 加缓存时，线上突然出现大量 cache miss。排查后发现，问题不在代码，而在 Redis 的淘汰策略选择上。
+由 **narrative-writer** agent 按其叙事弧线（场景→冲突→探索→发现→总结）执行写作。本 skill 不重复写作哲学。
 
-## 我原以为……
+在写作阶段，将 Phase 1 收集的素材注入叙事中：
 
-设置了 `maxmemory-policy allkeys-lru` 就万事大吉。LRU 嘛，最近最少使用的先淘汰，听起来完美。
+- 在**场景引入**中使用具体数据和情境
+- 在**探索过程**中引用官方文档、博客观点
+- 在**关键发现**中使用类比和对比
+- 在**可操作总结**中用 callout block 突出要点
+- 在**相关笔记**中放入 Phase 2 找到的 wikilinks
 
-但实际上，Redis 的 LRU 是**近似 LRU**——它只从随机采样的 key 中选最旧的淘汰，而不是真正追踪所有 key 的访问时间。
+---
 
-## 探索：为什么 hit rate 这么低？
+## Phase 4：责任编辑审核
 
-我用 `redis-cli INFO stats` 看了 eviction 相关指标……
+写作完成后，**必须**进行编辑审核。分派一个子代理担任"责任编辑"角色。
 
-（探索过程省略）
+### 4.1 审核方式
 
-## 原来如此
+使用 `runSubagent` 分派审核子代理，提供以下 prompt：
 
-Redis 6.0+ 的 `allkeys-lfu` 策略更适合我们的场景，因为……
+```
+你是一名责任编辑，负责审核一篇技术笔记的质量。
+请从以下 5 个维度逐一审核，每个维度给出"通过/需修改"评级及具体修改建议：
 
-> [!tip] 下次遇到 Redis 缓存问题
-> 1. 先用 `INFO stats` 检查 keyspace_hits/misses 比率
-> 2. 确认 maxmemory-policy 是否匹配访问模式（LRU vs LFU）
-> 3. 调整 `lfu-log-factor` 参数优化频率计数精度
+## 审核维度
 
-## 相关笔记
-- [[Redis 性能调优]]
-- [[缓存设计模式]]
+### 1. 叙事质量
+- 是否有流水账段落？（"首先…然后…最后…" → 应按 insight 组织）
+- 核心发现是否在前 3 段内出现？
+- 叙事弧线是否完整（有场景、有冲突、有发现）？
+
+### 2. 知识价值
+- 6 个月后重读，能否在 30 秒内获取核心 insight？
+- 可操作总结是否具体、可执行？（不是空泛的"注意性能"，而是具体步骤）
+- 是否遗漏了重要的上下文或限制条件？
+
+### 3. 准确性
+- 技术术语使用是否正确？
+- 代码片段是否正确、可运行？
+- 引用的数据/观点是否有出处？有没有编造？
+
+### 4. 格式规范
+- YAML frontmatter 是否完整（date, tags, type, status）？
+- 是否有至少 1 个 [[wikilink]]？
+- 是否使用了 callout block 突出关键发现？
+- 技术术语是否保留英文？（"缓存失效"可以，"贮藏失效"不行）
+
+### 5. 文字质量
+- 有没有错别字或语法错误？
+- 每段是否只有一个核心观点？
+- 是否有冗余段落可以删除？
+
+## 输出格式
+
+对每个维度：
+- ✅ 通过：简要说明为什么通过
+- ⚠️ 需修改：引用原文 → 给出修改建议
+
+最后给出总体评级：🟢 可发布 | 🟡 小修后发布 | 🔴 需要大改
 ```
 
-## 集成
+### 4.2 审核后处理
 
-**配套 Agent：**
-- **narrative-writer** — 专为此技能设计，使用 Obsidian MCP 工具
+| 总体评级 | 操作 |
+|---------|------|
+| 🟢 可发布 | 直接进入 Phase 5 保存 |
+| 🟡 小修后发布 | 按编辑建议修改后进入 Phase 5 |
+| 🔴 需要大改 | 回到 Phase 3 重写，再次审核 |
 
-**工具依赖：**
-- Obsidian MCP server — 笔记读写操作
-- `read_file` / `fetch_webpage` — 读取参考资料
+---
 
-**写作三层分工：**
-- **gem-documentation-writer** — 代码文档（API docs, README）
-- **se-technical-writer** — 发布型技术内容（博客、教程、ADR）
-- **narrative-writer** — 个人知识管理（学习笔记、决策记录、复盘）
+## Phase 5：保存到 Obsidian
+
+### 5.1 确定保存位置
+
+```
+步骤：
+1. 向用户确认 vault 路径（如果是首次使用）
+2. 搜索 vault 目录结构，找到合适的存放目录
+3. 尊重已有的文件夹分类习惯
+4. 文件名使用中文标题（与 Obsidian 笔记标题一致）
+```
+
+### 5.2 保存笔记
+
+使用 Obsidian MCP 工具写入笔记文件：
+
+- 调用 MCP 工具创建/更新笔记文件
+- 如果 Phase 2 规划了反向链接，同时更新旧笔记
+- 确认文件已成功写入
+
+### 5.3 更新状态
+
+```
+步骤：
+1. 设置 frontmatter status: draft（初稿）或 reviewed（已审核通过）
+2. 如果审核评级 🟢，设为 reviewed
+3. 否则保持 draft
+```
+
+---
+
+## 快速参考
+
+### Obsidian MCP 常用操作
+
+| 操作 | 说明 |
+|------|------|
+| 搜索笔记 | 按关键词/tag 搜索 vault 中的已有笔记 |
+| 读取笔记 | 读取已有笔记内容，用于知识关联 |
+| 创建笔记 | 在指定路径创建新笔记文件 |
+| 追加内容 | 向已有笔记追加内容（如反向链接） |
+| 列出目录 | 浏览 vault 目录结构 |
+
+### 与其他 Skills/Agents 的关系
+
+| 组件 | 角色 | 本 skill 如何使用 |
+|------|------|-----------------|
+| **narrative-writer** agent | 写作执行者——定义叙事哲学和格式规范 | Phase 3 由此 agent 执行写作 |
+| **gem-researcher** agent | 深度研究——收集素材和引用 | Phase 1 可委派进行深度素材收集 |
+| **gem-critic** agent | 批判性审查 | Phase 4 可选用作更严格的审查 |
+| **doublecheck** skill | 事实核查——三层验证管线 | Phase 4 中检查引用和数据准确性 |
+| **remember** skill | 记忆管理——将 insight 写入持久记忆 | 写完后将关键 insight 同步到 memory |
