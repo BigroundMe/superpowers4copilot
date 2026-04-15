@@ -87,6 +87,13 @@ if $UNINSTALL; then
     echo "  已删除: skills/"
   fi
   
+  # 删除全局指令
+  GLOBAL_INSTRUCTIONS_DIR="$HOME/.copilot/instructions"
+  if [[ -f "$GLOBAL_INSTRUCTIONS_DIR/global.instructions.md" ]]; then
+    rm "$GLOBAL_INSTRUCTIONS_DIR/global.instructions.md"
+    echo "  已删除: global.instructions.md (全局指令)"
+  fi
+  
   echo ""
   echo "卸载完成。"
   exit 0
@@ -122,6 +129,14 @@ if [[ -d "$TARGET_DIR/skills" ]]; then
 fi
 cp -r "$SCRIPT_DIR/skills" "$TARGET_DIR/skills"
 echo "  已安装: skills/ (全部技能文件)"
+
+# 安装全局指令到 ~/.copilot/instructions/
+GLOBAL_INSTRUCTIONS_DIR="$HOME/.copilot/instructions"
+mkdir -p "$GLOBAL_INSTRUCTIONS_DIR"
+if [[ -f "$SCRIPT_DIR/agents/global.instructions.md" ]]; then
+  cp "$SCRIPT_DIR/agents/global.instructions.md" "$GLOBAL_INSTRUCTIONS_DIR/global.instructions.md"
+  echo "  已安装: global.instructions.md (全局指令 → ~/.copilot/instructions/)"
+fi
 
 echo ""
 echo "安装完成！共安装 ${#PROMPT_FILES[@]} 个命令、${AGENT_COUNT} 个 agents。"

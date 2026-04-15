@@ -70,6 +70,14 @@ if ($Uninstall) {
         Remove-Item $skillsDir -Recurse -Force
         Write-Host "  已删除: skills/" -ForegroundColor Gray
     }
+
+    # 删除全局指令
+    $globalInstructionsDir = Join-Path $env:USERPROFILE ".copilot\instructions"
+    $globalInstructionsFile = Join-Path $globalInstructionsDir "global.instructions.md"
+    if (Test-Path $globalInstructionsFile) {
+        Remove-Item $globalInstructionsFile -Force
+        Write-Host "  已删除: global.instructions.md (全局指令)" -ForegroundColor Gray
+    }
     
     Write-Host ""
     Write-Host "卸载完成。" -ForegroundColor Green
@@ -111,6 +119,17 @@ if (Test-Path $skillsTarget) {
 }
 Copy-Item (Join-Path $ScriptDir "skills") $skillsTarget -Recurse
 Write-Host "  已安装: skills/ (全部技能文件)" -ForegroundColor Gray
+
+# 安装全局指令到 ~/.copilot/instructions/
+$globalInstructionsDir = Join-Path $env:USERPROFILE ".copilot\instructions"
+if (-not (Test-Path $globalInstructionsDir)) {
+    New-Item -ItemType Directory -Path $globalInstructionsDir -Force | Out-Null
+}
+$globalSource = Join-Path $ScriptDir "agents\global.instructions.md"
+if (Test-Path $globalSource) {
+    Copy-Item $globalSource (Join-Path $globalInstructionsDir "global.instructions.md") -Force
+    Write-Host "  已安装: global.instructions.md (全局指令 → ~/.copilot/instructions/)" -ForegroundColor Gray
+}
 
 Write-Host ""
 Write-Host "安装完成！共安装 $($PromptFiles.Count) 个命令、$agentCount 个 agents。" -ForegroundColor Green
