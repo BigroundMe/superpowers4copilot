@@ -10,7 +10,7 @@ research_confidence: high
 
 plan_metrics:
   wave_1_task_count: 4
-  total_dependencies: 18
+  total_dependencies: 21
   risk_score: medium
 
 tldr: |
@@ -669,8 +669,7 @@ tasks:
     dependencies:
       - "T05"
       - "T06"
-    conflicts_with:
-      - "T08"
+    conflicts_with: []
     context_files:
       - path: "prompts/sp-plan-exec.prompt.md"
         description: "当前执行计划的 prompt 文件"
@@ -798,6 +797,7 @@ tasks:
     status: pending
     dependencies:
       - "T05"
+      - "T08"
     conflicts_with: []
     context_files:
       - path: "docs/plan/gsd-research/research_findings_project_management.yaml"
@@ -994,8 +994,11 @@ tasks:
 # 5. 双向状态同步 — 当前设计是只读 GSD 状态，未来可考虑在我们的审查完成后
 #    将结果写入 GSD 的 .planning/ 目录（需要 GSD 提供写入 API 或约定）
 
-planning_pass: 1
+planning_pass: 2
 planning_history:
   - pass: 1
     reason: "初始规划——基于 GSD 研究发现的深度分析创建整合计划"
+    timestamp: "2026-04-15"
+  - pass: 2
+    reason: "DAG 验证修订：修复 T09 错误的 conflicts_with（T08/T09 不共享文件）；为 T11 补充对 T08 的依赖（两者均修改 gem-orchestrator.agent.md）"
     timestamp: "2026-04-15"
