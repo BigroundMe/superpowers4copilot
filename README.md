@@ -106,6 +106,10 @@ git pull
 | **gem-critic** | 假设挑战、边界分析、过度工程检测 |
 | **gem-designer** | UI/UX 设计规格，组件 API，无障碍指南 |
 | **gem-browser-tester** | Playwright 浏览器 E2E 测试 |
+| **security-reviewer** | 深度安全审计：OWASP Top 10、secrets 检测、输入验证 |
+| **performance-optimizer** | 性能分析：瓶颈定位、Bundle 优化、内存泄漏检测 |
+| **a11y-architect** | 无障碍架构：WCAG 2.2 合规、屏幕阅读器支持 |
+| **silent-failure-hunter** | 静默失败检测：空 catch、错误吞没、危险回退 |
 | **gem-documentation-writer** | 代码文档（API docs、README） |
 | **se-technical-writer** | 技术博客、教程、ADR |
 | **narrative-writer** | Obsidian 叙事式学习笔记 |

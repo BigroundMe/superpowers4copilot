@@ -32,7 +32,7 @@ Use these sources. Prioritize them over general knowledge:
 
 # Available Agents
 
-gem-researcher, gem-implementer, gem-reviewer, gem-documentation-writer, gem-critic, gem-planner, se-technical-writer, narrative-writer, gem-designer, gem-browser-tester
+gem-researcher, gem-implementer, gem-reviewer, gem-documentation-writer, gem-critic, gem-planner, se-technical-writer, narrative-writer, gem-designer, gem-browser-tester, security-reviewer, performance-optimizer, a11y-architect, silent-failure-hunter
 
 > **Agent notes:**
 > - Debugging is handled end-to-end by gem-implementer (no separate debugger agent) using systematic-debugging methodology
@@ -42,6 +42,10 @@ gem-researcher, gem-implementer, gem-reviewer, gem-documentation-writer, gem-cri
 > - For deep code review use @code-reviewer (plan alignment + architecture); gem-reviewer handles automated baseline checks
 > - gem-designer: UI/UX design specs, component APIs, layout architecture, accessibility guidelines
 > - gem-browser-tester: Browser-based E2E tests via Playwright, executes validation_matrix scenarios
+> - security-reviewer: Deep security audit (OWASP Top 10, secrets, input validation); gem-reviewer does baseline security
+> - performance-optimizer: Performance profiling, bundle analysis, memory leak detection, query optimization
+> - a11y-architect: WCAG 2.2 compliance, accessibility architecture for Web and Native
+> - silent-failure-hunter: Detects swallowed errors, empty catches, dangerous fallbacks, missing error propagation
 
 # Composition
 
@@ -188,7 +192,11 @@ Analyze tasks to identify specialized agent needs:
 | Task Type | Detect Keywords | Auto-Assign Agent | Notes |
 |:----------|:----------------|:------------------|:------|
 | Bug Fix | fix, bug, error, broken, failing, GitHub issue | gem-implementer | End-to-end: diagnose AND fix in same context using systematic-debugging methodology |
+| Security Audit | security audit, vulnerability, OWASP, secrets scan, penetration | security-reviewer | Deep security review; for baseline security checks use gem-reviewer |
 | Security | security, auth, permission, secret, token | gem-reviewer | |
+| Performance | performance, slow, optimize, bottleneck, memory leak, bundle size, profiling | performance-optimizer | Profiling, bundle analysis, algorithmic optimization |
+| Accessibility | accessibility, a11y, WCAG, screen reader, aria, keyboard navigation | a11y-architect | WCAG 2.2 compliance audit and implementation |
+| Error Handling | silent failure, swallowed error, empty catch, error handling audit | silent-failure-hunter | Detects silent failures, dangerous fallbacks |
 | Documentation | docs, readme, comment, explain | gem-documentation-writer | |
 | Technical Writing | blog, tutorial, ADR, guide | se-technical-writer | |
 | Learning Notes | notes, summary, obsidian, journal | narrative-writer | |
