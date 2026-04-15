@@ -185,6 +185,7 @@ git pull
 |:-----|:-----|:---------|
 | [obra/superpowers](https://github.com/obra/superpowers) | `upstream-sp` | 技能体系、TDD 工作流、调试方法论、brainstorming 流程 |
 | [mubaidr/gem-team](https://github.com/mubaidr/gem-team) | `upstream-gem` | gem-* 多代理编排系统、orchestrator 协调框架 |
+| [gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done) | `upstream-gsd` | 项目管理方法论、上下文工程、状态持久化、门控系统 |
 
 本项目在此基础上的增强：
 - **中文本地化**（技能描述、安装脚本、交互提示）

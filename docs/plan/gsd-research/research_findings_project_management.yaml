@@ -1,0 +1,1008 @@
+plan_id: gsd-research
+objective: "深入分析 gsd-build/get-shit-done 仓库的项目管理能力，提取可借鉴的设计模式"
+focus_area: project_management
+created_at: "2025-07-24"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - GSD 是一个基于「上下文工程」的元提示系统，核心解决 AI 编码助手的「上下文腐烂」问题——随着上下文窗口填满，输出质量退化
+  - 三层架构：斜杠命令 → CLI 工具层 (gsd-tools.cjs, 1250+ 行路由) → 文件系统 (.planning/)，所有状态持久化为文件
+  - 20+ 专用代理 × 9 hook × 4 门控类型，构成完整的「代理生命周期管理」体系
+  - SDK 层将整个体系抽象为可编程 API：QueryRegistry (80+ 处理器)、PhaseRunner 生命周期、GSDTools 桥接、事件流
+  - 核心洞察：GSD 的成功在于「约束即架构」——通过严格的文件结构、原子提交、锁文件、门控、上下文预算等约束，让不可靠的 LLM 产出可靠的结果
+
+research_metadata:
+  methodology: "混合检索：github_repo 搜索 (6 轮并行) + 代码片段分析 + 跨文件关系推导"
+  scope: "覆盖完整仓库：agents/、commands/、get-shit-done/、sdk/、hooks/、tests/、docs/ 目录"
+  confidence: high
+  coverage: 92
+  decision_blockers: 0
+  research_blockers: 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. STATE.md 状态管理机制
+# ═══════════════════════════════════════════════════════════════════════════════
+
+state_management:
+  overview: |
+    STATE.md 是项目的「短期记忆」，不超过 100 行。它不是归档，而是摘要——
+    只保留当前阶段所需的决策、阻塞器、会话连续性信息。
+    这个设计选择至关重要：它让每次会话恢复只需读取一个紧凑文件，
+    而不是遍历整个 .planning/ 目录。
+
+  core_engine:
+    file: "get-shit-done/bin/lib/state.cjs"
+    lines: "~1600+"
+    exported_functions: "~30"
+    key_patterns:
+      - name: "锁文件原子性 (Lockfile Atomicity)"
+        mechanism: |
+          acquireStateLock() 使用 O_CREAT|O_EXCL 标志（操作系统级原子操作），
+          10 次重试，200ms 间隔，带有过期锁检测（>10s 或 PID 已死）。
+          进程退出时自动清理持有的锁。
+        why_it_works: |
+          LLM 代理是并发的——多个子代理可能同时尝试更新 STATE.md。
+          没有锁文件，写冲突会导致数据丢失。
+          O_CREAT|O_EXCL 是 POSIX 标准的原子文件创建，比 mkdir 更可靠。
+        code_location: "state.cjs → acquireStateLock(), releaseStateLock()"
+
+      - name: "原子读-改-写 (Atomic Read-Modify-Write)"
+        mechanism: |
+          readModifyWriteStateMd() 在整个读-改-写周期内持有锁。
+          不是读取-释放-修改-获取-写入，而是一次性完成。
+        why_it_works: |
+          消除 TOCTOU (Time-of-check to time-of-use) 竞态条件。
+          任何修改 STATE.md 的操作都必须通过这个函数，保证串行化。
+
+      - name: "前置事实同步 (Frontmatter Sync)"
+        mechanism: |
+          writeStateMd() 在每次写入前调用 syncStateFrontmatter()。
+          buildStateFrontmatter() 从 body 内容 + 磁盘扫描（phases/ 目录）
+          重新构建 YAML frontmatter，而非依赖缓存。
+        why_it_works: |
+          前置事实是「衍生数据」，不是「权威数据」。
+          每次写入前重新计算，消除 body 与 frontmatter 之间的漂移。
+          cmdStateJson() 永远不返回陈旧的缓存 frontmatter。
+
+      - name: "磁盘扫描缓存"
+        mechanism: |
+          _diskScanCache 按 cwd 缓存，每个进程生命周期内有效。
+          避免在同一命令执行中重复扫描 phases/ 目录。
+
+  state_template_sections:
+    - "Project Reference — 核心价值与当前焦点"
+    - "Current Position — Phase X of Y, Plan A of B, Status"
+    - "Performance Metrics — 速率追踪"
+    - "Accumulated Context — 近期决策、阻塞器、关注点"
+    - "Deferred Items — 延迟的想法和待办"
+    - "Session Continuity — 上次会话、停在哪里、恢复文件"
+
+  state_commands:
+    - cmd: "cmdStateSnapshot"
+      purpose: "返回结构化快照：决策、阻塞器、会话信息"
+    - cmd: "cmdStateJson"
+      purpose: "永远从 body + 磁盘重建——不返回陈旧缓存"
+    - cmd: "cmdStateBeginPhase"
+      purpose: "新阶段开始时更新 body 字段"
+    - cmd: "cmdStateAdvancePlan"
+      purpose: "推进到下一个计划"
+    - cmd: "cmdStateRecordSession"
+      purpose: "更新 Last session、Stopped at、Resume file"
+    - cmd: "cmdStatePrune"
+      purpose: "将旧决策/摘要/阻塞器移到 STATE-ARCHIVE.md（保留最近 N 个阶段）"
+    - cmd: "cmdStateValidate / cmdStateSync"
+      purpose: "检测并修复 STATE.md 与文件系统之间的漂移"
+
+  sdk_port:
+    file: "sdk/src/query/state-mutation.ts"
+    detail: "TypeScript 异步移植，保留相同的锁文件原子性和死 PID 检测"
+
+  borrowable_insight: |
+    「状态是摘要，不是归档」+ 「每次写入前重建衍生数据」是极佳的设计模式。
+    superpowers4copilot 可以借鉴：session memory 应该有类似的
+    「不超过 N 行、每次写入都由源数据重新推导」的约束。
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. 里程碑系统
+# ═══════════════════════════════════════════════════════════════════════════════
+
+milestone_system:
+  overview: |
+    里程碑是项目的「大版本」边界。每个里程碑包含多个阶段（Phase），
+    阶段包含多个计划（Plan），计划包含多个任务（Task）。
+    4 层粒度：Milestone → Phase → Plan → Task。
+
+  lifecycle:
+    create: |
+      /gsd-new-milestone → 提问式需求收集 → 4 并行研究代理
+      (stack, features, architecture, pitfalls) → 需求文档 → 路线图生成
+    audit: |
+      /gsd-audit-milestone → 读取 VERIFICATION.md 文件，检查需求覆盖率
+    gap_plan: |
+      /gsd-plan-milestone-gaps → 读取审计结果，将缺口分组为新阶段
+    complete: |
+      /gsd-complete-milestone → 归档到 .planning/milestones/，创建 git tag
+    summary: |
+      /gsd-milestone-summary → 生成团队入职文档
+
+  archive_structure: |
+    .planning/milestones/
+    ├── v1.0-ROADMAP.md          # 路线图快照
+    ├── v1.0-REQUIREMENTS.md     # 需求快照
+    └── v1.0-phases/             # 阶段目录归档
+        ├── 01-foundation/
+        └── ...
+
+  why_it_works: |
+    里程碑提供了「完成感」和「可审计性」。
+    归档机制避免了 .planning/ 目录无限膨胀——
+    旧阶段的上下文不会污染新阶段的 AI 代理窗口。
+    git tag 提供了精确的可回溯点。
+
+  borrowable_insight: |
+    superpowers4copilot 的 plan 系统缺少「归档」和「审计」环节。
+    可以借鉴「完成 → 归档 → tag → 总结」的完整生命周期。
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. 规划编排 (Planning Orchestration)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+planning_orchestration:
+  overview: |
+    规划流程：discuss → research → plan → plan-check → execute → verify → advance。
+    每个步骤由 config 标志和阶段状态门控。人工门控回调在决策点触发。
+
+  plan_phase_workflow:
+    file: "get-shit-done/workflows/plan-phase.md"
+    steps:
+      - name: "init_context"
+        detail: |
+          一次调用加载所有上下文（仅路径，最小化编排器上下文）：
+          `gsd-tools init plan-phase $PHASE`
+          返回 JSON：phase_dir, phase_number, plans, summaries 等
+
+      - name: "research (4 并行代理)"
+        detail: |
+          4 个 gsd-phase-researcher 实例并行运行：
+          stack, features, architecture, pitfalls
+          产出 {phase}-RESEARCH.md
+
+      - name: "synthesize (串行)"
+        detail: |
+          gsd-research-synthesizer 合并 4 份研究成 SUMMARY.md
+          「要有主见」——路线图器需要明确推荐
+
+      - name: "plan (planner agent)"
+        detail: |
+          gsd-planner 创建 2-3 个原子任务计划
+          XML 结构：<task type="auto"> + <name> + <files> + <action> + <verify> + <done>
+          依赖图：needs/creates/has_checkpoint → 波次分析 → 垂直切片优先
+
+      - name: "plan-check (revision loop, max 3)"
+        detail: |
+          gsd-plan-checker 验证 5 个维度：
+          1) 需求覆盖 2) 任务完整性 3) 依赖正确性 4) 关键连接 5) 范围合理性
+          停滞检测：如果问题数量在迭代间不减少，则升级
+
+      - name: "execute (wave parallelism)"
+        detail: |
+          Wave 1 的计划并行执行，Wave 2 等待 Wave 1 完成。
+          每个执行器获得新鲜 200K 上下文窗口。
+          每个任务原子 git 提交。
+
+      - name: "verify → advance"
+        detail: "验证通过后推进到下一阶段"
+
+  plan_format:
+    frontmatter_fields:
+      - "phase: XX-name"
+      - "plan: NN"
+      - "type: execute"
+      - "wave: N — 执行波次"
+      - "depends_on: [] — 前置计划"
+      - "files_modified: [] — 涉及文件"
+      - "autonomous: true/false — 是否有检查点"
+      - "requirements: [] — 对应的需求 ID（不可为空）"
+      - "must_haves: {truths, artifacts, key_links} — 目标逆推"
+    body_structure:
+      - "<objective> — 目标"
+      - "<context> — 引用文件"
+      - "<tasks> — 任务列表（XML 格式）"
+      - "<verification> — 阶段级验证"
+      - "<success_criteria> — 可度量的完成标准"
+
+  wave_parallelism:
+    algorithm: |
+      无依赖 = Wave 1（可并行）
+      仅依赖 Wave 1 = Wave 2
+      wave = max(deps.wave) + 1
+      共享文件冲突 = 强制串行
+    why_it_works: |
+      波次分析将 AI 代理的执行从纯串行变成受控并行。
+      关键约束是「共享文件冲突」——两个修改同一文件的计划必须串行。
+      这比无约束并行安全得多，又比纯串行快得多。
+
+  dependency_graph:
+    reachability_check: |
+      v1.32 新增：对 must_haves 的每个 artifact 验证存在具体路径：
+      - Entity → 阶段内创建路径或已有存在
+      - Workflow → 用户操作或 API 调用触发
+      - Config flag → 默认值 + 消费者
+      - UI → 路由或导航
+      UNREACHABLE → 修订计划
+    why_it_works: |
+      「目标逆推」(goal-backward) 而非「步骤正推」(step-forward)。
+      先定义「什么必须为真」，再验证计划是否能达到。
+      这捕获了「计划看起来完整但实际遗漏关键连接」的常见错误。
+
+  borrowable_insight: |
+    1. 「一次 init 调用加载所有上下文」极大减少编排器的上下文消耗
+    2. 「目标逆推 + 可达性检查」是比简单 checklist 更强的验证模式
+    3. 波次分析是 superpowers4copilot 的 /sp-parallel 可以直接借鉴的调度策略
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. 会话恢复机制
+# ═══════════════════════════════════════════════════════════════════════════════
+
+session_recovery:
+  overview: |
+    三层恢复优先级：
+    1. HANDOFF.json (最高——结构化，机器可读)
+    2. .continue-here.md (次之——人类可读检查点)
+    3. STATE.md + 文件系统推断 (最低——需要重建)
+
+  handoff_json:
+    location: ".planning/HANDOFF.json"
+    created_by: "/gsd-pause-work"
+    consumed_by: "/gsd-resume-work → resume-project workflow"
+    lifecycle: "创建 → 恢复时使用 → 使用后删除（一次性制品）"
+    structure:
+      version: "1.0"
+      timestamp: "ISO timestamp"
+      phase: "当前阶段编号"
+      phase_name: "阶段名称"
+      phase_dir: "阶段目录路径"
+      plan: "当前计划编号"
+      task: "当前任务编号"
+      total_tasks: "总任务数"
+      status: "paused"
+      completed_tasks: "已完成任务列表 [{id, name, status, commit}]"
+      remaining_tasks: "剩余任务列表 [{id, name, status}]"
+      blockers: "阻塞器 [{description, type, workaround}]"
+      human_actions_pending: "等待人工操作 [{action, context, blocking}]"
+      decisions: "本次会话的决策 [{decision, rationale, phase}]"
+      uncommitted_files: "未提交的文件"
+      next_action: "恢复时的第一个动作"
+      context_notes: "心理状态、思路、在想什么"
+
+    why_it_works: |
+      双格式输出（JSON + Markdown）分别服务于机器和人类。
+      JSON 让 resume-work 可以精确恢复到任务级别，
+      而不是模糊的「继续上次的工作」。
+      「使用后删除」避免了过期 handoff 误导恢复流程。
+
+  continue_here_md:
+    location: |
+      根据上下文类型动态确定：
+      - 阶段工作 → .planning/phases/XX-name/.continue-here.md
+      - Spike → .planning/spikes/SPIKE-NNN/.continue-here.md
+      - 讨论 → .planning/deliberations/.continue-here.md
+      - 默认 → .planning/.continue-here.md
+    sections:
+      - "frontmatter: phase, task, total_tasks, status, last_updated"
+      - "BLOCKING CONSTRAINTS — 读取任何东西之前先读这里"
+      - "current_state — 精确位置"
+      - "completed_work — 已完成内容"
+      - "remaining_work — 剩余内容"
+      - "decisions_made — 关键决策及原因"
+      - "blockers — 阻塞及变通方案"
+      - "context — 心理状态、思路"
+      - "next_action — 恢复时第一个动作"
+    anti_pattern_enforcement: |
+      v1.31+ 新增：severity 字段（blocking / advisory）。
+      blocking 级别的约束要求恢复代理在继续之前「演示理解」。
+      discuss-phase 和 execute-phase 工作流会强制执行理解检查。
+
+  resume_priority_chain:
+    - "中断的代理 → 恢复代理（Task tool with resume）"
+    - "HANDOFF.json → 从结构化 handoff 恢复"
+    - ".continue-here → 从检查点恢复"
+    - "PLAN 无 SUMMARY → 完成未完成的计划"
+    - "阶段就绪 → 检查 CONTEXT.md → discuss 或 plan"
+
+  state_reconstruction: |
+    如果 STATE.md 缺失但其他制品存在：
+    1. 读 PROJECT.md → 提取核心价值
+    2. 读 ROADMAP.md → 确定阶段和当前位置
+    3. 扫描 *-SUMMARY.md → 提取决策、关注点
+    4. 计数 todos/pending/
+    5. 检查 .continue-here → 会话连续性
+    重建并写入 STATE.md
+
+  waiting_json:
+    purpose: "机器可读的信号文件，指示 GSD 到达了需要用户输入的决策点"
+    location: ".planning/WAITING.json 或 .gsd/WAITING.json"
+    consumed_by: "外部监视器 (fswatch, polling, 编排器)"
+    clear: "cmdSignalResume() — 用户回答后删除"
+
+  borrowable_insight: |
+    「三层恢复优先级」比 superpowers4copilot 当前的 session memory 更健壮。
+    特别是 HANDOFF.json 的「使用后删除」和 anti-pattern severity 强制理解检查，
+    可以解决「代理恢复后忽略之前的教训」的常见问题。
+    WAITING.json 信号文件模式为 SDK 集成提供了优雅的异步人机交互。
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. 进度追踪
+# ═══════════════════════════════════════════════════════════════════════════════
+
+progress_tracking:
+  overview: |
+    /gsd-progress 使用路由 A-F 系统，根据当前项目状态智能导航到下一步。
+    不只是「显示进度条」，而是「告诉 AI 下一步该做什么」。
+
+  routes:
+    A: "当前阶段还有计划要执行 → 执行下一个计划"
+    B: "阶段完成，需要下一个阶段 → 切换阶段"
+    C: "需要规划当前阶段 → 启动规划流程"
+    D: "里程碑完成（所有阶段完成）→ 里程碑总结"
+    F: "里程碑之间 → 新里程碑或审计"
+
+  smart_routing: |
+    不只是展示状态，而是提供上下文感知的「下一步行动」：
+    - 有计划存在 → 提供 /gsd-execute-phase
+    - 无计划 → 提供 /gsd-plan-phase
+    - 有阻塞器 → 先高亮，再提供继续选项
+    - 有 handoff → 提醒并提供 /gsd-resume-work
+    - 100% 完成 → 检测并提供里程碑完成
+
+  edge_cases:
+    - "阶段完成但下一阶段未规划 → 提供 /gsd-plan-phase [next]"
+    - "所有工作完成 → 提供里程碑完成"
+    - "阻塞器存在 → 在提供继续前先高亮"
+    - "Handoff 文件存在 → 提醒并提供 /gsd-resume-work"
+
+  performance_metrics: |
+    STATE.md 的 Performance Metrics 部分追踪：
+    - Velocity 总计（按阶段的 By Phase 表）
+    - 每次计划完成时自动更新
+
+  borrowable_insight: |
+    路由系统是关键创新——它把「状态展示」变成了「决策引擎」。
+    superpowers4copilot 可以在 orchestrator 中实现类似的
+    「根据当前状态自动推导下一步行动」的路由机制。
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. 上下文文件系统 (.planning/)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+context_file_system:
+  overview: |
+    .planning/ 是 GSD 的「外部大脑」。所有项目知识持久化为文件。
+    这不是数据库，而是文件系统作为数据库——每个文件都有明确的角色、
+    生命周期和消费者。
+
+  root_artifacts:
+    - name: "PROJECT.md"
+      purpose: "项目愿景、约束、决策——永远加载到上下文"
+    - name: "REQUIREMENTS.md"
+      purpose: "带 REQ-ID 的作用域需求——计划和检查的依据"
+    - name: "ROADMAP.md"
+      purpose: "阶段分解与状态追踪"
+    - name: "STATE.md"
+      purpose: "活记忆：位置、决策、阻塞器、指标"
+    - name: "config.json"
+      purpose: "工作流配置：模式、门控、功能开关"
+    - name: "MILESTONES.md"
+      purpose: "已完成里程碑归档"
+    - name: "HANDOFF.json"
+      purpose: "结构化会话 handoff"
+    - name: "RETROSPECTIVE.md"
+      purpose: "活回顾——每个里程碑更新"
+
+  directory_structure:
+    research:
+      contents: "SUMMARY.md, STACK.md, FEATURES.md, ARCHITECTURE.md, PITFALLS.md"
+      lifecycle: "新项目/新里程碑时由 4 并行研究代理创建"
+    codebase:
+      contents: "7 个文档（棕地项目映射）"
+      lifecycle: "/gsd-map-codebase 创建"
+    phases:
+      pattern: "XX-phase-name/"
+      contents:
+        - "XX-CONTEXT.md — 用户决策（6 段格式）"
+        - "XX-RESEARCH.md — 阶段研究"
+        - "XX-YY-PLAN.md — 执行计划（XML 任务格式）"
+        - "XX-YY-SUMMARY.md — 完成摘要"
+        - "XX-VERIFICATION.md — 验证结果"
+        - ".continue-here.md — 中途恢复点"
+    todos:
+      structure: "pending/ 和 done/"
+    debug:
+      structure: "active sessions + resolved/"
+    threads:
+      purpose: "对话线程"
+    seeds:
+      purpose: "想法种子"
+    quick:
+      purpose: "快速任务 (/gsd-quick)"
+    reports:
+      purpose: "会话报告"
+    intel:
+      contents: "files.json, apis.json, deps.json, arch.md, stack.json"
+      purpose: "可查询的代码库智能系统"
+    graphs:
+      contents: "graph.json, .last-build-snapshot.json"
+      purpose: "知识图谱"
+
+  context_engine_sdk:
+    file: "sdk/src/context-engine.ts"
+    mechanism: |
+      ContextEngine 按阶段类型加载不同的文件集：
+      - Execute: state + config（最小化——执行器只需知道该做什么）
+      - Plan: state + roadmap + context + research + requirements
+      - Research: state + roadmap + context
+      - Verify: state + roadmap + requirements + plan + summary
+      - Discuss: state + roadmap
+      - Repair: state + config + plan
+    why_it_works: |
+      按阶段类型「最小化上下文加载」是核心上下文工程策略。
+      执行器不需要 ROADMAP.md（减少噪音），
+      验证器需要 requirements 但不需要 research。
+      这直接减少了上下文窗口的浪费。
+
+  workspace_support:
+    file: "sdk/src/query/workspace.ts"
+    mechanism: |
+      GSD_WORKSTREAM 或 GSD_PROJECT 环境变量作用域 .planning/ 路径。
+      例：workstream='backend' → .planning/workstreams/backend/STATE.md
+      安全性：workspace 名称验证拒绝路径遍历 (T-14-05)
+
+  borrowable_insight: |
+    1. 「阶段类型决定加载哪些文件」是比「全部加载」高效得多的策略
+    2. 每个文件有明确的「Shape → Lifecycle → Location → Consumed by」定义
+    3. superpowers4copilot 的 docs/plan/ 可以借鉴「强类型文件角色」的设计
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. 代理体系
+# ═══════════════════════════════════════════════════════════════════════════════
+
+agent_system:
+  overview: |
+    20+ 专用代理，11 个类别。每个代理有精确的工具权限、模型配置、
+    生成契约和完成标记。关键设计原则：「瘦编排器 + 新鲜上下文子代理」。
+
+  agent_registry:
+    researchers:
+      count: 3
+      agents: "project-researcher, phase-researcher, ui-researcher"
+      parallelism: "4 并行（stack, features, architecture, pitfalls）"
+    analyzers:
+      count: 2
+      agents: "assumptions-analyzer, advisor-researcher"
+    synthesizers:
+      count: 1
+      agents: "research-synthesizer"
+      parallelism: "串行（在所有研究者完成后）"
+    planners:
+      count: 1
+      agents: "planner"
+      parallelism: "串行"
+    roadmappers:
+      count: 1
+      agents: "roadmapper"
+    executors:
+      count: 1
+      agents: "executor"
+      parallelism: "波次内并行，波次间串行"
+    checkers:
+      count: 3
+      agents: "plan-checker, integration-checker, ui-checker"
+      parallelism: "串行（验证循环，max 3 迭代）"
+    verifiers:
+      count: 1
+      agents: "verifier"
+    auditors:
+      count: 3
+      agents: "nyquist-auditor, ui-auditor, security-auditor"
+    mappers:
+      count: 1
+      agents: "codebase-mapper"
+    debuggers:
+      count: 1
+      agents: "debugger"
+
+  key_agent_details:
+    executor:
+      purpose: "执行计划任务，提交代码，创建 SUMMARY.md"
+      model_profiles: "{quality: Opus, balanced: Sonnet, budget: Sonnet}"
+      tools: "Read, Write, Edit, Bash, Grep, Glob"
+      fresh_context: "每个计划获得新鲜 200K 上下文窗口"
+      commit_protocol: "每个任务原子 git 提交"
+      checkpoint_types: "auto, human-verify, decision, human-action"
+      completion_markers: "## PLAN COMPLETE, ## CHECKPOINT REACHED"
+
+    planner:
+      purpose: "创建可执行阶段计划：任务分解、依赖分析、目标逆推验证"
+      model_profiles: "{quality: Opus, balanced: Opus, budget: Sonnet}"
+      tools: "Read, Write, Bash, Glob, Grep, WebFetch, MCP"
+      completion_markers: "## PLANNING COMPLETE"
+      key_innovation: |
+        「计划即提示」——PLAN.md 不是文档，是执行器的输入提示。
+        规划器的输出质量直接决定执行器的输出质量。
+
+    plan_checker:
+      purpose: "验证计划是否会实现阶段目标——目标逆推分析"
+      dimensions:
+        - "需求覆盖：每个需求 ID 是否有对应任务"
+        - "任务完整性：Files + Action + Verify + Done 是否齐全"
+        - "依赖正确性：依赖图是否无环、引用是否有效"
+        - "关键连接：制品间的连接是否有对应任务"
+        - "范围合理性：2-3 tasks/plan、5-8 files/plan"
+      stall_detection: |
+        如果修订循环中问题数量在迭代间不减少 → 升级到开发者
+
+    debugger:
+      purpose: "科学方法调试，带持久状态"
+      lifecycle: "gathering → investigating → fixing → verifying → awaiting_human_verify → resolved"
+
+    advisor_researcher:
+      purpose: "讨论阶段的灰色地带研究，产出 5 列比较表"
+      output: "Option | Pros | Cons | Complexity | Recommendation（条件推荐，不是单一赢家）"
+
+  tool_permissions:
+    pattern: |
+      工具权限是「最小权限原则」的完美体现：
+      - 研究者：有 WebSearch + WebFetch（需要外部信息）
+      - 规划者：有 WebFetch 无 WebSearch（使用已知 URL，不搜索）
+      - 执行者：有 Write + Edit（需要修改文件）无 Web（不应上网）
+      - 分析器：只有 Read + Bash + Grep + Glob（只读分析）
+      - 综合器：Read + Write + Bash（读取研究、写入综合摘要）
+
+  model_profiles:
+    purpose: |
+      三档模型配置（quality/balanced/budget），让用户根据成本预算选择：
+    matrix:
+      planner: "Opus / Opus / Sonnet"
+      roadmapper: "Opus / Sonnet / Sonnet"
+      executor: "Opus / Sonnet / Sonnet"
+      phase_researcher: "Opus / Sonnet / Haiku"
+      debugger: "Opus / Sonnet / Sonnet"
+      codebase_mapper: "Sonnet / Haiku / Haiku"
+
+  agent_contracts:
+    file: "references/agent-contracts.md"
+    markers:
+      planner: "## PLANNING COMPLETE"
+      executor: "## PLAN COMPLETE, ## CHECKPOINT REACHED"
+      researcher: "## RESEARCH COMPLETE, ## RESEARCH BLOCKED"
+      plan_checker: "## VERIFICATION PASSED, ## ISSUES FOUND"
+    why_it_works: |
+      完成标记是「机器可解析的结束信号」。
+      编排器不需要理解代理输出的语义——只需搜索特定标记。
+      这将代理间通信简化为「结构化的固定格式信号」。
+
+  spawn_pattern: |
+    瘦编排器模式：编排器只负责路由和协调，不做实际工作。
+    每次生成子代理时传递「新鲜上下文」——
+    这是解决「上下文腐烂」的核心策略。
+    子代理完成后，编排器只取回「结构化结果」（完成标记 + 制品路径），
+    不是全部输出。
+
+  sdk_variants:
+    location: "sdk/prompts/agents/"
+    detail: "无头自主版本（headless SDK variant），无用户交互"
+
+  borrowable_insight: |
+    1. 「完成标记」简化了代理间通信——superpowers4copilot 的子代理也应有固定的结束信号格式
+    2. 「工具权限矩阵」是必要的安全边界——当前 superpowers4copilot 的代理几乎共享所有工具
+    3. 「瘦编排器 + 新鲜上下文子代理」比「胖编排器管一切」更抗上下文腐烂
+    4. 三档模型配置是极好的成本控制机制
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. Hook 机制
+# ═══════════════════════════════════════════════════════════════════════════════
+
+hooks_mechanism:
+  overview: |
+    9 个 hook：6 个始终启用的 JS hook + 3 个可选的 bash 社区 hook。
+    Hook 在 AI 会话的关键时刻注入检查和上下文。
+
+  always_on_hooks:
+    - name: "gsd-statusline.js"
+      event: "statusLine"
+      purpose: "显示模型、任务、目录、上下文使用率条"
+
+    - name: "gsd-context-monitor.js"
+      event: "PostToolUse / AfterTool"
+      purpose: |
+        代理面向的上下文警告：
+        - 35% 剩余时发出警告
+        - 25% 剩余时自动记录会话状态到 STATE.md
+      bug_fix: "#1974 — 上下文耗尽时自动记录 'Stopped at' 字段"
+      why_it_works: |
+        LLM 不知道自己的上下文窗口还剩多少。
+        这个 hook 充当「油量表」，在耗尽前触发保存。
+        这是防止「上下文腐烂」的最后一道防线。
+
+    - name: "gsd-prompt-guard.js"
+      event: "PreToolUse"
+      purpose: "扫描 .planning/ 写入操作中的提示注入（咨询性）"
+
+    - name: "gsd-read-guard.js"
+      event: "PreToolUse"
+      purpose: "阻止对未在本会话中 Read 过的文件执行 Edit/Write（咨询性）"
+      why_it_works: |
+        「先读后改」是防止盲目覆盖的基本纪律。
+        LLM 经常「自信地」修改从未读过的文件。
+        这个 hook 提醒代理：你还没读过这个文件。
+
+    - name: "gsd-workflow-guard.js"
+      event: "PreToolUse"
+      purpose: "检测 GSD 工作流之外的编辑（可选，config: hooks.workflow_guard）"
+
+    - name: "gsd-check-update.js"
+      event: "SessionStart"
+      purpose: "后台版本检查（生成 worker.js 子进程）"
+
+  community_hooks:
+    opt_in: "config.json → hooks.community === true"
+    hooks:
+      - name: "gsd-session-state.sh"
+        event: "SessionStart"
+        purpose: "注入 STATE.md 前 20 行"
+
+      - name: "gsd-validate-commit.sh"
+        event: "PostToolUse"
+        purpose: "验证 conventional commit 格式"
+
+      - name: "gsd-phase-boundary.sh"
+        event: "PostToolUse"
+        purpose: "检测正常工作流之外的 .planning/ 文件写入"
+
+  build_pipeline:
+    file: "scripts/build-hooks.js"
+    process: |
+      - 复制 hook 到 hooks/dist/
+      - JS hook 通过 vm.compileFunction() 语法验证
+      - .sh hook 设置 chmod 0o755
+    managed_hooks_list: |
+      gsd-check-update-worker.js 维护 MANAGED_HOOKS 数组，
+      列出所有已发布 hook，通过版本头比较检测过期。
+
+  borrowable_insight: |
+    1. 「上下文监视器」是 superpowers4copilot 迫切需要的——当前没有机制感知上下文消耗
+    2. 「先读后改」防护可以集成到 gem-implementer 的工作流中
+    3. 「提示注入扫描」对接受外部输入的系统尤其重要
+    4. Hook 的 opt-in 机制比全开或全关更灵活
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. SDK 架构
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sdk_architecture:
+  overview: |
+    SDK 将整个 GSD 系统抽象为可编程 TypeScript API。
+    核心组件：GSD 类 → QueryRegistry → GSDTools 桥接 → PhaseRunner → 事件流。
+
+  main_class:
+    file: "sdk/src/index.ts"
+    api:
+      - "executePlan(planPath, options) → PlanResult"
+      - "onEvent(handler) → 订阅所有 GSD 事件"
+      - "addTransport(handler) → 结构化传输（WebSocket, 文件）"
+      - "createTools() → GSDTools 实例"
+      - "runPhase(phaseNumber, options) → 通过 PhaseRunner 运行完整阶段生命周期"
+
+  query_registry:
+    file: "sdk/src/query/registry.ts"
+    mechanism: |
+      扁平 Map<string, QueryHandler> 路由。
+      80+ 注册处理器。
+      未知命令抛出 GSDError（v3.0 移除了到 gsd-tools.cjs 的桥接）。
+    api: "register(command, handler), has(command), dispatch(command, args, projectDir)"
+    extractField: "点号/括号表示法字段提取，用于 --pick 参数"
+
+  registered_handlers_categories:
+    utility: "generate-slug, current-timestamp, frontmatter.get/set/merge/validate"
+    config: "config-get, resolve-model"
+    state: "state.load, state.json, state.get, state-snapshot, stateUpdate, stateBeginPhase, stateAdvancePlan, stateRecordSession"
+    phase: "find-phase, phase-plan-index, phase.add/insert/remove/complete/scaffold, phases.clear/archive/list"
+    roadmap: "roadmap.analyze, roadmap.get-phase"
+    progress: "progress, progress.json"
+    verify: "verify plan-structure, verify.phase-completeness, verify.artifacts, verify.key-links, verify.commits, verify.references, verify-summary"
+    init: "init.execute-phase, init.plan-phase"
+    intel: "intel.query, intel.status, intel.diff, intel.snapshot"
+    profile: "write-profile, profile-questionnaire, scan-sessions, generate-claude-md"
+    uat: "uat.render-checkpoint, audit-uat"
+    learnings: "learnings.write, learnings.list, learnings.query"
+    workstream: "workstream.create, workstream.set, workstream.list"
+
+  gsd_tools_bridge:
+    file: "sdk/src/gsd-tools.ts"
+    mechanism: |
+      Shell out 到 gsd-tools.cjs 而非重新实现「12K+ 行逻辑」。
+      exec(command, args) → JSON 输出，支持 @file: 前缀处理大结果。
+      30s 超时，10MB maxBuffer。
+    convenience_methods:
+      - "stateLoad(), roadmapAnalyze(), phaseComplete(), commit()"
+      - "verifySummary(), initPhaseOp(), configGet()"
+      - "stateBeginPhase(), phasePlanIndex()"
+    path_resolution: "项目本地 → 仓库捆绑 → 全局 home 目录"
+
+  phase_runner:
+    file: "sdk/src/phase-runner.ts"
+    lifecycle: "discuss → research → plan → plan-check → execute → verify → advance"
+    gating: "每步由 config 标志和阶段状态门控"
+    human_gates: "决策点的人工门控回调；未提供时自动批准"
+
+  tool_scoping:
+    file: "sdk/src/tool-scoping.ts"
+    phase_tool_map:
+      Execute: "Read, Write, Edit, Bash, Grep, Glob"
+      Research: "Read, Write, Bash, Grep, Glob, WebSearch, WebFetch"
+      Plan: "Read, Write, Bash, Glob, Grep, WebFetch"
+      Verify: "Read, Bash, Grep, Glob"
+      Discuss: "Read, Bash, Grep, Glob"
+
+  pipeline:
+    file: "sdk/src/query/pipeline.ts"
+    mechanism: |
+      分阶段执行管道：prepare → execute → finalize。
+      支持 dry-run：mutations 在临时目录克隆上执行，返回 diff 而不实际写入。
+
+  cli:
+    file: "sdk/src/cli.ts"
+    commands: "run <prompt>, auto, init [input], query <command>"
+    options: "--project-dir, --ws <name>, --ws-port <port>, --model, --pick <field>"
+
+  event_stream: |
+    GSD 事件流通过 onEvent() 和 addTransport() 暴露。
+    State mutations 通过 GSDEventStream 发出事件。
+    这允许外部工具（IDE 插件、Dashboard）实时监听 GSD 操作。
+
+  borrowable_insight: |
+    1. QueryRegistry 的「扁平映射 + extractField」比深层嵌套路由更简洁
+    2. 「Shell out 到已验证的 CLI」而非重新实现是务实的工程决策
+    3. dry-run 管道为测试和预览提供了安全的尝试机制
+    4. 事件流模式让 SDK 可以驱动 UI——superpowers4copilot 如果有 SDK 化需求，应借鉴
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 10. 知识图谱 (Graphify)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+knowledge_graph:
+  overview: |
+    Graphify 是项目知识的语义关系图。存储在 .planning/graphs/graph.json。
+    通过 config.json 的 graphify 字段启用。
+    核心用途：在规划和研究阶段发现非显式的跨文档依赖关系。
+
+  core_engine:
+    file: "get-shit-done/bin/lib/graphify.cjs"
+    config_gate: "isGraphifyEnabled() → 读取 .planning/config.json → graphify.enabled"
+
+  graph_structure:
+    nodes: "代码实体（模块、函数、类、配置）"
+    edges:
+      structure: "{source, target, label, confidence}"
+      labels: "reads_from, creates, triggers, notifies, logs_via 等"
+      confidence_tiers:
+        EXTRACTED: "从代码静态分析中提取"
+        INFERRED: "从上下文推断"
+        AMBIGUOUS: "不确定的关系"
+    hyperedges:
+      structure: "{id, nodes[], label}"
+      purpose: "多节点关系（如 auth_flow 涉及 3 个模块）"
+
+  commands:
+    query:
+      mechanism: |
+        graphifyQuery(cwd, term, options)
+        使用 seed-then-expand BFS 遍历 (D-01)。
+        支持 --budget 参数限制返回大小。
+      return: "{term, nodes, edges, total_nodes, total_edges, trimmed}"
+    status:
+      mechanism: |
+        graphifyStatus(cwd)
+        报告 graph.json 存在性、上次构建时间、年龄、
+        过期标志 (STALE_MS = 24h)、节点/边/超边计数。
+    diff:
+      mechanism: |
+        graphifyDiff(cwd)
+        与上次构建快照的拓扑级比较：
+        nodes.added/removed/changed, edges.added/removed/changed
+    build:
+      mechanism: |
+        graphifyBuild(cwd) — 预检（非直接构建）：
+        检查 graphify CLI 是否已安装、版本、输出目录。
+        构建超时从 config 读取（默认 300s）。
+        实际构建由代理生成子进程执行。
+
+  agent_integration:
+    planner: |
+      gsd-planner.md Step "load_graph_context":
+      1. 检查 graph.json 是否存在
+      2. 查询图谱状态（过期则标注 "treat as approximate"）
+      3. 按阶段目标关键词查询：graphify query "<keyword>" --budget 2000
+      4. 将语义关系注入到依赖上下文中
+    phase_researcher: |
+      gsd-phase-researcher.md Step 1.3:
+      按阶段能力查询 2-3 个关键词，budget 1500。
+      用途：发现非显式跨文档关系、架构边界、隐式依赖。
+      如果无结果或 graph.json 不存在：优雅降级，继续无图谱上下文。
+
+  why_it_works: |
+    LLM 的规划和研究依赖于「理解代码库的关系」。
+    简单的 grep/glob 只能找到文本匹配，而知识图谱提供了语义级别的关系。
+    BFS 遍历 + budget 限制避免了图谱查询膨胀消耗上下文窗口。
+    置信度分层让消费者知道关系的可靠程度。
+
+  borrowable_insight: |
+    superpowers4copilot 当前完全没有「项目知识图谱」概念。
+    虽然实现成本较高，但图谱查询集成到 planner/researcher 的
+    模式值得注意——即使用简化版（如依赖分析 JSON），也能提升规划质量。
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 补充系统
+# ═══════════════════════════════════════════════════════════════════════════════
+
+supplementary_systems:
+
+  gates_taxonomy:
+    file: "get-shit-done/references/gates.md"
+    types:
+      pre_flight:
+        purpose: "验证前置条件，不满足则阻塞，不产生部分工作"
+        example: "plan-phase 入口检查 REQUIREMENTS.md 和 ROADMAP.md 存在"
+      revision:
+        purpose: "评估输出质量，循环回生产者，有迭代上限"
+        stall_detection: "问题数量迭代间不减少 → 升级"
+        example: "plan-checker 最多 3 次修订循环"
+      escalation:
+        purpose: "将不可解决的问题以清晰选项呈现给开发者"
+        example: "verify-work 评估发现缺口 → 告知开发者"
+      abort:
+        purpose: "当继续会造成损害时停止，保留状态以便恢复"
+        example: "next 命令遇到错误状态 → 停止并诊断"
+
+  intel_system:
+    file: "get-shit-done/bin/lib/intel.cjs"
+    purpose: "可查询的 JSON 索引：代码库结构、API 表面、依赖图、文件角色、架构决策"
+    storage: ".planning/intel/ 目录"
+    files:
+      - "files.json — 文件角色索引"
+      - "apis.json — API 表面索引"
+      - "deps.json — 依赖图索引"
+      - "arch.md — 架构描述"
+      - "stack.json — 技术栈索引"
+    commands: "query, status, update, diff, snapshot, patch-meta, validate, extract-exports"
+    freshness: "24 小时过期阈值"
+    config_gate: "intel.enabled (默认 false)"
+
+  learnings_system:
+    file: "sdk/src/query/profile.ts"
+    storage: "~/.gsd/knowledge/ (全局知识存储)"
+    operations: "write, list, query (by tag + limit)"
+    integration: "gsd-planner 代理在计划生成时注入历史经验"
+    config: "learnings.max_inject (默认 10)"
+    why_it_works: |
+      跨项目的经验积累。规划器不只依赖当前项目上下文，
+      还能查询过去项目中类似标签的经验教训。
+      这模拟了「资深工程师的经验直觉」。
+
+  quick_mode:
+    command: "/gsd-quick [--full] [--validate] [--discuss] [--research]"
+    purpose: "跳过研究+检查+验证的快速路径，1 个计划 + 1-3 个任务"
+    storage: ".planning/quick/ (独立于规划阶段)"
+    flags: "--discuss --research --validate = --full"
+
+  config_json:
+    location: ".planning/config.json"
+    key_namespaces:
+      hooks: "community, workflow_guard"
+      intel: "enabled"
+      graphify: "enabled, build_timeout"
+      learnings: "max_inject"
+      workflow: "verifier (是否启用验证步骤)"
+      git: "branching_strategy, phase_branch_template, milestone_branch_template"
+      model: "quality/balanced/budget 档位"
+      parallelization: "波次并行控制"
+      context_window: "上下文窗口大小 (默认 200000)"
+      depth: "规划深度 (1-5)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 综合分析：为什么 GSD 有效
+# ═══════════════════════════════════════════════════════════════════════════════
+
+why_gsd_works:
+  core_thesis: |
+    GSD 的核心洞察：LLM 不可靠，但约束可以使系统可靠。
+    通过在以下 5 个维度施加约束，GSD 将不确定的 AI 输出
+    变成可预测、可审计、可恢复的工程流程。
+
+  constraint_dimensions:
+    1_file_structure: |
+      每个文件有精确的角色、格式、生命周期和消费者。
+      这消除了「自由发挥」的空间——代理必须按格式输出。
+    2_atomic_commits: |
+      每个任务一个 git 提交。
+      这创建了细粒度的可回溯点，失败时可以精确回退。
+    3_lockfile_atomicity: |
+      O_CREAT|O_EXCL 锁文件保护并发写入。
+      没有这个，并行代理会写坏 STATE.md。
+    4_gate_system: |
+      4 种门控类型（预检、修订、升级、中止）覆盖所有失败模式。
+      特别是修订门控的「停滞检测」——如果修不好，升级比无限循环好。
+    5_context_budget: |
+      上下文窗口是有限资源。GSD 在每个决策中都考虑上下文预算：
+      - init 命令只返回路径，不返回内容
+      - 阶段类型决定加载哪些文件
+      - 执行器获得新鲜上下文窗口
+      - 上下文监视器在 35%/25% 时触发
+      - STATE.md 不超过 100 行
+
+  anti_context_rot_strategies:
+    - "瘦编排器：编排器不做实际工作，只路由和协调"
+    - "新鲜子代理：每次生成获得干净的上下文窗口"
+    - "最小化加载：按阶段类型只加载必需文件"
+    - "结构化返回：代理返回标记+制品路径，不是全部输出"
+    - "上下文监视器：在耗尽前自动保存并警告"
+    - "STATE.md 修剪：旧内容移到归档，保持紧凑"
+
+  comparison_with_superpowers4copilot:
+    gsd_strengths:
+      - "文件系统状态管理比内存 session memory 更持久"
+      - "锁文件原子性解决了并发写入问题"
+      - "门控系统提供了系统化的失败处理"
+      - "上下文预算管理是当前 superpowers4copilot 完全缺失的"
+      - "三层恢复优先级比单层 session memory 更健壮"
+      - "代理工具权限矩阵提供了安全边界"
+      - "知识图谱和 Intel 系统提供了语义级代码理解"
+    superpowers4copilot_strengths:
+      - "VS Code 原生集成，无需 CLI"
+      - "prompt 模板系统更灵活"
+      - "brainstorm 和 TDD 技能没有对应物"
+      - "多 IDE 支持（VS Code 生态）"
+    key_gaps_to_address:
+      - "上下文消耗感知 — 需要类似 gsd-context-monitor 的机制"
+      - "结构化状态持久化 — session memory 之外需要文件系统状态"
+      - "门控和修订循环 — plan-exec 缺少自动质量检查"
+      - "恢复优先级链 — 当前恢复靠用户手动操作"
+      - "代理工具权限矩阵 — 所有代理共享所有工具"
+      - "完成标记协议 — 子代理结束信号应标准化"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 开放问题和差距
+# ═══════════════════════════════════════════════════════════════════════════════
+
+open_questions:
+  - question: "GSD 的性能开销如何？每个 gsd-tools 调用都是 Node.js 进程启动"
+    context: "研究中发现每个 state 操作都通过 shell out 到 gsd-tools.cjs"
+    type: nice_to_know
+    affects: ["sdk_adoption_decision"]
+
+  - question: "graphify 的知识图谱构建依赖外部 graphify CLI，这个 CLI 的实现和安装门槛如何？"
+    context: "graphifyBuild 检查 CLI 是否已安装但未发现 CLI 的安装方式"
+    type: research
+    affects: ["knowledge_graph_feature_consideration"]
+
+  - question: "GSD 的 workstream 系统与 git worktree 的交互细节"
+    context: "研究中发现 workspace.ts 支持 GSD_WORKSTREAM 环境变量但未深入"
+    type: nice_to_know
+    affects: ["parallel_development_design"]
+
+gaps:
+  - area: "graphify CLI 实现细节"
+    description: "graphify.cjs 是 wrapper，实际图谱构建依赖外部 CLI，未检索其实现"
+    impact: nice_to_know
+    affects: []
+
+  - area: "WAITING.json 的具体字段结构"
+    description: "知道 cmdSignalWaiting 写入但未获取完整 JSON schema"
+    impact: nice_to_know
+    affects: []
+
+  - area: "Profile 系统的完整工作流"
+    description: "知道有 user-profiler 代理和 profile-questionnaire 但未深入"
+    impact: nice_to_know
+    affects: []

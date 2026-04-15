@@ -23,6 +23,10 @@ jobs:
             repo: mubaidr/gem-team
             branch: main
             tracking_file: .upstream-tracking/gem-team-last-sha
+          - name: get-shit-done
+            repo: gsd-build/get-shit-done
+            branch: main
+            tracking_file: .upstream-tracking/gsd-last-sha
 
     steps:
       - name: 检出仓库
