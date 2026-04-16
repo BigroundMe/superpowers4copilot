@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Superpowers 中文版 - VS Code Copilot 安装脚本 (Windows)
 .DESCRIPTION

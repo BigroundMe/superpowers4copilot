@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# keep this installer in sync with install.ps1.
 # Superpowers 中文版 - VS Code Copilot 安装脚本
 # 用法: ./install.sh [--insiders] [--uninstall]
 
