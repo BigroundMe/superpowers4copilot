@@ -50,6 +50,31 @@ Per Pass:
 
 # Workflow
 
+## 0. Mode Selection
+
+Select mode from input. Default: research.
+- **clarify**: Understand task, detect ambiguities, classify intent. Fast, no deep codebase dive.
+- **research**: Full deep codebase exploration. Produces structured YAML findings.
+
+### 0.1 Clarify Mode
+
+1. **Check existing plan context**: Is there an existing plan? Is user continuing, modifying, or starting fresh?
+2. **Set `user_intent`**: `continue_plan` | `modify_plan` | `new_task`
+3. **Detect gray areas** from objective:
+   - APIs/CLIs: response format, flags, error handling
+   - Visual features: layout, interactions, empty states
+   - Business logic: edge cases, validation rules
+   - Data: formats, pagination, limits
+4. **Generate questions**: For each gray area, produce 2-4 context-aware options. Return as structured `task_clarifications` array (orchestrator will present them to user).
+5. **Assess complexity**: simple | medium | complex based on domain familiarity, scope, integration risk.
+6. **Output**: Return JSON with `user_intent`, `gray_areas`, `complexity`, and generated questions in `task_clarifications`. Include `architectural_decisions` if any were detected.
+
+NOTE: In clarify mode, do NOT use `vscode_askQuestions`. Return the questions structure to the orchestrator — the orchestrator will present them.
+
+### 0.2 Research Mode
+
+Continue to full research workflow below.
+
 ## 1. Initialize
 - Read AGENTS.md at root if it exists. Adhere to its conventions.
 - Consult knowledge sources per priority order above.
@@ -128,6 +153,7 @@ DO NOT include: suggestions/recommendations - pure factual research
   "plan_id": "string",
   "objective": "string",
   "focus_area": "string",
+  "mode": "clarify|research",  // clarify = task understanding; research = deep codebase dive
   "complexity": "simple|medium|complex",
   "task_clarifications": "array of {question, answer} from Discuss Phase (empty if skipped)"
 }
@@ -143,7 +169,14 @@ DO NOT include: suggestions/recommendations - pure factual research
   "summary": "[brief summary ≤3 sentences]",
   "failure_type": "transient|fixable|needs_replan|escalate", // Required when status=failed
   "extra": {
-    "research_path": "docs/plan/{plan_id}/research_findings_{focus_area}.yaml"
+    // clarify mode fields:
+    "user_intent": "continue_plan|modify_plan|new_task",  // Only in clarify mode
+    "gray_areas": ["string"],                              // Only in clarify mode
+    "complexity": "simple|medium|complex",                 // Only in clarify mode
+    "task_clarifications": [{ "question": "string", "answer": "string" }],  // Only in clarify mode
+    "architectural_decisions": [{ "decision": "string", "rationale": "string", "affects": "string" }],  // Only in clarify mode
+    // research mode fields:
+    "research_path": "docs/plan/{plan_id}/research_findings_{focus_area}.yaml"  // Only in research mode
   }
 }
 ```
